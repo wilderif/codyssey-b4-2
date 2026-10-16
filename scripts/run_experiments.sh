@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
+# Run the six fixed cases as agent and preserve separate evidence for each run.
 set -euo pipefail
 export LC_ALL=C
+# Keep newly created evidence readable and writable only by its owner.
 umask 077
 
+# Print the supplied error message to stderr and stop this script with status 1.
 fail() {
     echo "[ERROR] $*" >&2
     exit 1
@@ -22,18 +25,22 @@ for directory in "$AGENT_UPLOAD_DIR" "$AGENT_KEY_PATH" "$AGENT_LOG_DIR" "$AGENT_
 done
 [[ -w $AGENT_LOG_DIR && -w $AGENT_HOME/evidence ]] || fail 'Log/evidence directories are not writable.'
 
+# Use a unique session directory so repeated invocations retain earlier evidence.
 session_dir=$(mktemp -d "$AGENT_HOME/evidence/$(date +%Y%m%dT%H%M%S)-XXXXXX")
 echo "Evidence: $session_dir"
 run_dir=
 launcher_pid=
 monitor_pid=
 
+# Check launcher_pid's process group: return 0 if a live member exists, else 1.
 group_alive() {
     # The launcher can exit before its worker. Ignore zombies, but include live children.
     ps -eo pgid=,stat= | awk -v group="$launcher_pid" \
         '$1 == group && $2 !~ /^[ZX]/ {found=1} END {exit !found}'
 }
 
+# Write current cgroup limits/counters and kernel messages to the caller's output.
+# Mark unavailable checks explicitly; cgroup counters can include other processes.
 diagnostics() {
     date --iso-8601=seconds
     cat /proc/self/cgroup
@@ -50,6 +57,9 @@ diagnostics() {
     fi
 }
 
+# Take a termination reason, stop this run's monitor/group and save final evidence.
+# Use the current run_dir, launcher_pid and monitor_pid; retain the app exit status.
+# Return nonzero for startup/automation failure so no subsequent case is started.
 finish_run() {
     local reason=$1 app_status=0 monitor_status=0 grace
     # Avoid recursive cleanup; finish the current group even if evidence writing fails.
@@ -63,6 +73,7 @@ finish_run() {
         fi
         wait "$monitor_pid" || monitor_status=$?
     fi
+    # Request TERM only for this run's group, then allow five seconds before KILL.
     if group_alive; then
         printf '%s requested SIGTERM pgid=%s\n' \
             "$(date --iso-8601=seconds)" "$launcher_pid" >> "$run_dir/cleanup.log" \
@@ -97,6 +108,7 @@ finish_run() {
     echo "[$case_name] $reason; exit=$app_status; elapsed=$((SECONDS-start_seconds))s"
     launcher_pid=
     monitor_pid=
+    # Restore default signal handling after this run is fully recorded.
     trap - INT TERM
     [[ $reason != automation_failure && $reason != startup_failure ]]
 }
@@ -109,6 +121,7 @@ for settings in \
     'cpu-after       512   30 false' \
     'deadlock-before 512   30 true' \
     'deadlock-after  512   30 false'; do
+    # Export this case's settings for the app; reject an occupied port before launch.
     read -r case_name MEMORY_LIMIT CPU_MAX_OCCUPY MULTI_THREAD_ENABLE <<< "$settings"
     export MEMORY_LIMIT CPU_MAX_OCCUPY MULTI_THREAD_ENABLE
     listeners=$(ss -H -ltn 'sport = :15034')
@@ -134,13 +147,14 @@ for settings in \
     # setsid scopes TERM/KILL to this run, including the binary's worker child.
     setsid "$app" > "$run_dir/application.out" 2>&1 &
     launcher_pid=$!
+    # Unexpected exits collect failure evidence; INT/TERM retain interruption status.
     trap 'finish_run automation_failure' EXIT
     trap 'finish_run interrupted; exit 130' INT
     trap 'finish_run interrupted; exit 143' TERM
     printf 'launcher_pid=%s\n' "$launcher_pid" > "$run_dir/launcher.txt"
     echo "[$case_name] launcher=$launcher_pid"
 
-    # Identify the actual listener rather than measuring the launcher as well.
+    # Wait up to 30 seconds for the actual listener; measure its worker only.
     app_pid=
     while group_alive && (( SECONDS-start_seconds < 30 )); do
         ss -H -ltnp 'sport = :15034' > "$run_dir/listener.txt"
@@ -153,6 +167,7 @@ for settings in \
         exit 1
     fi
 
+    # Require the expected executable/owner, this run's group and its launcher parent.
     [[ $app_pid =~ ^[1-9][0-9]*$ ]]
     [[ $(readlink "/proc/$app_pid/exe") == "$app" ]]
     [[ $(stat -c %u "/proc/$app_pid") == "$EUID" ]]
@@ -166,6 +181,7 @@ for settings in \
     cp "$run_dir/application.out" "$run_dir/boot.out"
     find "$AGENT_LOG_DIR" -type f -printf '%p %s %T+\n' > "$run_dir/logs-start.txt"
 
+    # Observe the verified worker until app exit, collection failure or the time limit.
     bash /workspace/scripts/monitor.sh "$app_pid" "$run_dir" > "$run_dir/monitor.out" 2>&1 &
     monitor_pid=$!
     reason=app_exit
@@ -183,6 +199,7 @@ for settings in \
         fi
         sleep 1
     done
+    # A timeout is an observation limit; the saved app status is recorded separately.
     finish_run "$reason"
 done
 

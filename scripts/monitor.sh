@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
+# Sample one worker PID as agent and append process evidence to the given directory.
 set -euo pipefail
 export LC_ALL=C
 
+# Print the supplied error message to stderr and stop this script with status 1.
 fail() {
     echo "[ERROR] $*" >&2
     exit 1
 }
 
+# Validate the PID and output location before creating evidence files.
 [[ $# == 2 && $1 =~ ^[1-9][0-9]*$ ]] || fail 'Usage: monitor.sh <pid> <evidence_dir>'
 app_pid=$1
 evidence_dir=$2
@@ -17,7 +20,8 @@ clock_ticks=$(getconf CLK_TCK)
 expected_exe=$AGENT_HOME/agent-leak-app-arm64
 start_ticks=
 
-# Return 1 for process exit, 2 for an unreadable or replaced process.
+# Read the worker's counters, RSS and uptime into shared variables for the sample loop.
+# Return 0 on success, 1 for process exit, 2 for an unreadable or replaced process.
 read_sample() {
     local proc_stat
     if ! proc_stat=$(cat "/proc/$app_pid/stat" 2>/dev/null); then
@@ -44,7 +48,8 @@ read_sample() {
     read -r uptime _ < /proc/uptime
 }
 
-# Keep auxiliary process/thread evidence and the last application log lines.
+# Append app_pid process/thread state and log tails to evidence_dir/system.log.
+# Allow a vanished PID in ps output; other collection or write errors stop the script.
 snapshot() {
     {
         date --iso-8601=seconds
@@ -56,6 +61,7 @@ snapshot() {
     } >> "$evidence_dir/system.log"
 }
 
+# Establish PID identity and record the measured worker before writing samples.
 if read_sample; then
     start_ticks=${fields[19]}
 else
@@ -75,14 +81,17 @@ previous_uptime=$uptime
 previous_ticks=$cpu_ticks
 cpu_pct=NA
 last_snapshot=-10
+# Let the runner request a final snapshot before it terminates the app group.
 trap 'snapshot; exit 0' INT TERM
 
+# Append elapsed seconds, interval CPU and RSS in MiB for each live sample.
 while :; do
     elapsed=$(awk -v now="$uptime" -v start="$baseline_uptime" \
         'BEGIN {printf "%.2f", now-start}')
     rss_mib=$(awk -v rss="$rss_kib" 'BEGIN {printf "%.2f", rss/1024}')
     printf '%s\t%s\t%s\t%s\t%s\n' "$(date --iso-8601=seconds)" \
         "$elapsed" "$app_pid" "$cpu_pct" "$rss_mib" >> "$evidence_dir/samples.tsv"
+    # Capture auxiliary evidence on the first sample and about every ten seconds.
     if (( ${elapsed%.*} - last_snapshot >= 10 )); then
         snapshot
         last_snapshot=${elapsed%.*}
@@ -95,6 +104,7 @@ while :; do
     sleep "$delay"
 
     if read_sample; then
+        # CPU tick delta / CLK_TCK / actual elapsed seconds; one core equals 100%.
         cpu_pct=$(awk -v ticks="$cpu_ticks" -v prior="$previous_ticks" \
             -v now="$uptime" -v before="$previous_uptime" -v hz="$clock_ticks" \
             'BEGIN {printf "%.2f", 100*(ticks-prior)/hz/(now-before)}')
@@ -106,4 +116,5 @@ while :; do
         fail 'Cannot read process measurements.'
     fi
 done
+# Preserve the final process/log state even after the worker has disappeared.
 snapshot

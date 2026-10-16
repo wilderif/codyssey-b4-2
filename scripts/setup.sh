@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
+# Prepare the persistent app files and agent account as root; do not start the app.
 set -euo pipefail
 
+# Print the supplied error message to stderr and stop this script with status 1.
 fail() {
     echo "[ERROR] $*" >&2
     exit 1
 }
 
+# Require the Compose paths before using them to create or install files.
 [[ $EUID == 0 ]] || fail 'Run setup as root inside the container.'
 : "${AGENT_HOME:?Use the Compose environment.}"
 : "${AGENT_UPLOAD_DIR:?}" "${AGENT_KEY_PATH:?}" "${AGENT_LOG_DIR:?}"
@@ -21,6 +24,7 @@ source /etc/os-release
 for tool in awk cmp find getconf install ldd ps readlink runuser sed setsid ss stat top useradd; do
     command -v "$tool" >/dev/null || fail "Missing tool: $tool"
 done
+# Check port availability and shared libraries without launching the application.
 listeners=$(ss -H -ltn 'sport = :15034')
 [[ -z $listeners ]] || fail 'Port 15034 is already in use.'
 dependencies=$(ldd "$source_app")
@@ -47,6 +51,7 @@ for directory in "$AGENT_HOME" "$AGENT_UPLOAD_DIR" "$AGENT_KEY_PATH" \
     install -d -o agent -g agent -m 700 "$directory"
 done
 
+# Create the required test key only when absent; retain matching existing content.
 if [[ ! -e $key_file ]]; then
     printf 'agent_api_key_test\n' > "$key_file"
 fi
@@ -67,10 +72,12 @@ runuser -u agent -- bash -euo pipefail -c '
     for directory in "$AGENT_UPLOAD_DIR" "$AGENT_KEY_PATH" "$AGENT_LOG_DIR" "$AGENT_HOME/evidence"; do
         test -d "$directory" && test -x "$directory"
     done
+    # Verify an actual log-directory write, then remove only this temporary probe.
     probe=$(mktemp "$AGENT_LOG_DIR/.write-check.XXXXXX")
     rm "$probe"
     test -w "$AGENT_UPLOAD_DIR"
     test -w "$AGENT_HOME/evidence"
 '
+# Report preparation results separately from application startup verification.
 stat -c '%U:%G %a %n' "$app" "$key_file"
 echo '[OK] Preparation complete; application startup has not been verified.'
