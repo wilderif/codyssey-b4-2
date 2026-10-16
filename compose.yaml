@@ -1,0 +1,23 @@
+name: codyssey-b4-2
+
+services:
+  agent:
+    build: .
+    image: codyssey-b4-2:local
+    platform: linux/arm64
+    command: ["sleep", "infinity"]
+    environment:
+      TZ: KST-9
+      LC_ALL: C
+      AGENT_HOME: /home/agent/agent-leak-app
+      AGENT_PORT: "15034"
+      AGENT_UPLOAD_DIR: /home/agent/agent-leak-app/upload_files
+      AGENT_KEY_PATH: /home/agent/agent-leak-app/api_keys
+      AGENT_LOG_DIR: /home/agent/agent-leak-app/logs
+    volumes:
+      - ./scripts:/workspace/scripts:ro
+      - ./agent-app-leak:/workspace/agent-app-leak:ro
+      - app_data:/home/agent/agent-leak-app
+
+volumes:
+  app_data:
