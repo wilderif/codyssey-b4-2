@@ -6,6 +6,7 @@ services:
     image: codyssey-b4-2:local
     platform: linux/arm64
     command: ["sleep", "infinity"]
+
     environment:
       TZ: KST-9
       LC_ALL: C
@@ -14,6 +15,7 @@ services:
       AGENT_UPLOAD_DIR: /home/agent/agent-leak-app/upload_files
       AGENT_KEY_PATH: /home/agent/agent-leak-app/api_keys
       AGENT_LOG_DIR: /home/agent/agent-leak-app/logs
+
     volumes:
       - ./scripts:/workspace/scripts:ro
       - ./agent-app-leak:/workspace/agent-app-leak:ro
