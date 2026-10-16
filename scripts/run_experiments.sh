@@ -113,14 +113,14 @@ finish_run() {
     [[ $reason != automation_failure && $reason != startup_failure ]]
 }
 
-# Use the six fixed assignment settings without changing other variables.
+# Keep CPU at 30 for OOM/Deadlock to reduce CPU-fault interference.
 for settings in \
-    'oom-before       50  100 false' \
-    'oom-after       512  100 false' \
-    'cpu-before      512   10 false' \
-    'cpu-after       512  100 false' \
-    'deadlock-before 512  100 true' \
-    'deadlock-after  512  100 false'; do
+    'oom-before       50   30 false' \
+    'oom-after       512   30 false' \
+    'cpu-before      512  100 false' \
+    'cpu-after       512   30 false' \
+    'deadlock-before 512   30 true' \
+    'deadlock-after  512   30 false'; do
     # Export this case's settings for the app; reject an occupied port before launch.
     read -r case_name MEMORY_LIMIT CPU_MAX_OCCUPY MULTI_THREAD_ENABLE <<< "$settings"
     export MEMORY_LIMIT CPU_MAX_OCCUPY MULTI_THREAD_ENABLE
