@@ -9,15 +9,18 @@ Docker Desktop과 `agent-app-leak/agent-leak-app-arm64`를 준비한 뒤 저장�
 ```bash
 docker compose up -d --build
 docker compose exec -T --user root agent bash /workspace/scripts/setup.sh
+
 mkdir -p evidence
 docker inspect codyssey-b4-2-agent-1 > evidence/docker-before.json
 docker compose exec -T --user agent agent bash /workspace/scripts/run_experiments.sh
 docker inspect codyssey-b4-2-agent-1 > evidence/docker-after.json
 docker compose cp agent:/home/agent/agent-leak-app/evidence/. evidence/
+
+docker compose down
 ```
 
 각 실행은 약 1초 간격으로 최대 600초 관측한다. 앱이 먼저 종료되면 다음 실행으로 넘어간다.
-종료는 `docker compose down`을 사용한다. 데이터 보존을 위해 `down -v`는 사용하지 않는다.
+`docker compose down`으로 종료해도 볼륨의 데이터는 유지된다.
 
 ## 실험 조건
 
@@ -33,8 +36,6 @@ docker compose cp agent:/home/agent/agent-leak-app/evidence/. evidence/
 각 쌍에서 대상 변수 하나만 변경한다. OOM·Deadlock은 CPU 장애 간섭을 줄이기 위해 CPU 설정을 30으로 고정한다.
 
 ## 결과
-
-2026-10-16 실행 ID: `20261016T171314-IvPGr0`.
 
 | 보고서 | Before | After |
 | --- | --- | --- |
