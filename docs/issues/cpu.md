@@ -39,6 +39,7 @@ After의 부하 조절 로그와 실험기 종료 요청:
 2026-10-16 17:33:58,650 [INFO] [CpuWorker] Peak reached (30.00%). Starting cooldown...
 2026-10-16 17:33:59,659 [INFO] [CpuWorker] Current Load: 30.00%
 2026-10-16 17:34:02,786 [INFO] [CpuWorker] Current Load: 24.60%
+2026-10-16T17:34:05+09:00 requested SIGTERM pgid=9145
 ```
 
 Before는 `reason=app_exit`이며 실험기의 종료 요청은 없었다.

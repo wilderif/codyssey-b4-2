@@ -1,70 +1,82 @@
-# [Bug] Deadlock - CPU 장애 간섭으로 교착상태 미재현
+# [Bug] Deadlock - 두 작업자의 순환 자원 대기로 작업 정체
 
 ## 1. Description
 
-2026-10-16 `MEMORY_LIMIT=512`, `CPU_MAX_OCCUPY=100`을 고정하고 `MULTI_THREAD_ENABLE=true/false`를 비교했다.
-true는 24초, false는 27초 만에 CPU 임계치 위반 로그 후 종료됐다. PID가 남는 무응답 상태는 재현되지 않았다.
-600초를 관측하기 전에 다른 장애가 먼저 발생했으므로 Deadlock 진단과 회피 효과의 비교는 미검증이다.
-이 문서는 조건 변경 전 실행 기록이며, 아래 수치·로그·시각은 당시 결과다.
+2026-10-16 `MEMORY_LIMIT=512`, `CPU_MAX_OCCUPY=30`을 고정하고 `MULTI_THREAD_ENABLE=true → false`를 비교했다.
+true에서는 PID가 유지됐지만 CPU·RSS·로그가 정체됐다. 서로 다른 자원을 보유한 두 작업자가 상대 자원을 기다리는 로그가 확인됐다.
+false에서는 600초 동안 작업 로그와 CPU·RSS 변화가 이어졌다.
 
 ## 2. Evidence & Logs
 
-원본: `evidence/20261016T164019-exZ12j/{deadlock-before,deadlock-after}/`.
-true의 worker는 PID 9504, launcher는 9497이다. 실행 파일·`agent` 소유자·부모 관계·리스너를 확인했다.
-
-`ps -L`의 실제 출력:
+원본: `evidence/20261016T171314-IvPGr0/{deadlock-before,deadlock-after}/`.
+Before의 마지막 자원 보유·대기 로그:
 
 ```text
-2026-10-16T16:51:51+09:00
+2026-10-16 17:34:13,459 [INFO] [AgentWorker][Worker-Thread-1] LOCK ACQUIRED: [Shared_Memory_A]. (Holding...)
+2026-10-16 17:34:13,459 [INFO] [AgentWorker][Worker-Thread-2] LOCK ACQUIRED: [Socket_Pool_B]. (Holding...)
+2026-10-16 17:34:15,472 [INFO] [AgentWorker][Worker-Thread-2] WAITING for [Shared_Memory_A]... (Status: BLOCKED)
+2026-10-16 17:34:15,475 [INFO] [AgentWorker][Worker-Thread-1] WAITING for [Socket_Pool_B]... (Status: BLOCKED)
+```
+
+`system.log`의 종료 요청 직전 프로세스·스레드 관측:
+
+```text
+2026-10-16T17:44:06+09:00
+    PID    PPID    PGID USER     STAT ELAPSED   RSS COMMAND
+  17376   17370   17370 agent    SNl      600 16848 agent-leak-app-
     PID    PPID     TID STAT WCHAN                                TIME COMMAND
-   9504    9497    9504 SN   poll_schedule_timeout.constprop. 00:00:00 agent-leak-app-
+  17376   17370   17376 SNl  futex_do_wait                    00:00:00 agent-leak-app-
+  17376   17370   17490 SNl  futex_do_wait                    00:00:00 agent-leak-app-
+  17376   17370   17491 SNl  futex_do_wait                    00:00:00 agent-leak-app-
+/home/agent/agent-leak-app/logs/agent_app.log 65256 2026-10-16+17:34:15.4757714260
 ```
 
-`system.log`에 기록된 앱 로그 상태:
+정체 구간의 `samples.tsv` 표본:
 
 ```text
-/home/agent/agent-leak-app/logs/agent_app.log 41473 2026-10-16+16:51:38.4164730060
-/home/agent/agent-leak-app/logs/agent_app.log 41729 2026-10-16+16:51:50.9394730120
+timestamp                   elapsed_s pid   cpu_pct rss_mib
+2026-10-16T17:34:46+09:00     39.37     17376 0.00    16.45
+2026-10-16T17:44:05+09:00     598.02    17376 0.00    16.45
 ```
 
-로그는 계속 갱신됐고 마지막에 CPU 임계치 위반이 기록됐다.
-
-```text
- >>> SYSTEM WARNING: POTENTIAL DEADLOCK IN CONCURRENT MODE.
-2026-10-16 16:51:47,810 [INFO] [CpuWorker] Current Load: 38.60%
-2026-10-16 16:51:50,940 [INFO] [CpuWorker] Current Load: 43.30%
-2026-10-16 16:51:54,067 [INFO] [CpuWorker] Current Load: 52.02%
-2026-10-16 16:51:54,173 [CRITICAL] [CpuWorker] CPU Threshold Violated! (52.02%).
-```
-
-16:51:54의 최종 `ps`에는 worker가 없고 `top`의 대상 태스크도 0개였다.
-`result.txt`는 `reason=app_exit`, `launcher_exit=143`, `monitor_exit=0`이다.
-실험기의 종료 요청은 없었으며 cgroup OOM·CPU throttling 증가도 없었다.
+로그 크기와 수정 시각은 마지막 대기 로그 이후 종료 요청 직전까지 변하지 않았다.
+Before는 앱 자체 종료 없이 600초를 채웠고, 실험기가 17:44:06에 현재 그룹으로 TERM을 요청했다.
 
 ## 3. Root Cause Analysis
 
-낮은 CPU와 일정한 RSS만으로 Deadlock을 판단할 수 없다. 이번 스레드 관측은 poll 대기였으며,
-서로의 락 소유·획득 대기나 순환 대기를 나타내는 증거는 없다. 앱 로그도 계속 갱신되다가 PID가 사라졌다.
-부팅 시의 `POTENTIAL DEADLOCK`은 경고이며 발생 증거가 아니다.
+| 작업자 | 보유 자원 | 기다리는 자원 |
+| --- | --- | --- |
+| Worker-Thread-1 | Shared_Memory_A | Socket_Pool_B |
+| Worker-Thread-2 | Socket_Pool_B | Shared_Memory_A |
 
-Deadlock에는 상호 배제·점유 대기·비선점·순환 대기가 관련되지만 이번 관측에서는 확인하지 못했다.
-CPU 임계치 위반에 따른 종료 간섭으로 관측이 끝났으므로 Deadlock 자체의 근본 원인은 분석할 수 없다.
+각 작업자가 자원을 보유한 채 상대 자원을 기다려 순환 대기가 형성됐다.
+자원 보유·대기 로그, 지속되는 futex 대기, CPU·RSS·로그 정체와 PID 생존을 종합하면 교착상태로 판단한다.
+상호 배제·점유 대기·순환 대기는 로그가 뒷받침하며, 관측 기간 내 자원 회수나 대기 해제는 없었다.
+실제 락 구현과 비선점 정책까지 직접 확인한 것은 아닌 블랙박스 추론이다.
+
+`futex_do_wait` 하나만으로 교착을 확정할 수는 없다. false 실행에서도 주 스레드 대기가 관측됐지만 보조 스레드의 poll 대기와 작업 로그 갱신이 이어졌다.
 
 ## 4. Workaround & Verification
+
+After의 관측 종료 직전 로그:
+
+```text
+2026-10-16 17:53:54,966 [INFO] [System] Memory Cache Flushed. Process Stabilized.
+2026-10-16 17:54:04,692 [INFO] [CpuWorker] Current Load: 16.85%
+2026-10-16 17:54:06,050 [INFO] [MemoryWorker] Current Heap: 75MB
+```
 
 | 항목 | Before | After |
 | --- | --- | --- |
 | MULTI_THREAD_ENABLE | true | false |
-| worker / launcher PID | 9504 / 9497 | 9891 / 9884 |
-| 실행 구간（+09:00） | 16:51:30–16:51:54 | 16:51:54–16:52:21 |
-| 실험기 경과 초 | 24 | 27 |
-| CPU 최대（한 코어=100%） | 3.96% | 4.95% |
-| RSS 범위（MiB） | 16.39–16.45 | 16.38–16.44 |
-| 마지막 장애 로그 | CPU Threshold Violated! (52.02%) | CPU Threshold Violated! (52.059999999999995%) |
-| Deadlock 진단·회피 | 미검증（CPU 장애 간섭） | 미검증（CPU 장애 간섭） |
+| 실행 구간 (+09:00) | 17:34:06–17:44:07 | 17:44:07–17:54:08 |
+| worker PID | 17376 | 25579 |
+| 실험기 경과 (초) | 601 | 601 |
+| 실제 CPU 최대 | 0.00% | 3.96% |
+| RSS 범위 (MiB) | 16.39–16.45 | 16.39–516.67 |
+| 로그 | 17:34:15 이후 정체 | 종료 직전까지 갱신 |
+| 종료 이유 | 600초 정체 후 실험기 TERM | 600초 관측 후 실험기 TERM |
+| launcher / monitor 종료 코드 | 143 / 0 | 143 / 0 |
 
-false 변경 후의 지속적인 정상 동작이나 Deadlock 회피는 확인하지 못했다.
-기존 실행에서는 고정 조건을 변경하지 않았다.
-
-다음 실험에서는 메모리 512·CPU 30을 고정하고 스레드만 true → false로 비교한다.
-이 조건은 실행기에 반영했으며 아직 실행하지 않았다. CPU 간섭 감소·교착상태 재현·회피 효과는 미검증이다.
+경과 시간에는 준비·종료 처리가 포함된다. 멀티스레드 설정을 끄면 관측 기간 내 순환 대기와 작업 정체를 피했다.
+이는 동시 처리 경로를 피하는 우회이며, 락 구현의 근본 수정이나 600초 이후의 안정성을 검증한 결과는 아니다.
